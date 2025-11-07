@@ -1,0 +1,115 @@
+# Este workflow hace build y push de la aplicación al cluster de Azure Kubernetes Service (AKS) con cada push de código.
+# El workflow asume que el AKS ya ha sido creado.
+
+# Para configurar el workflow:
+# 1. Configura los siguientes secretos en tu repositorio:
+#  -AZURE_CLIENT_ID
+#  -AZURE_TENANT_ID
+#  -AZURE_SUBSCRIPTION_ID
+#  -DH_USERNAME
+#  -DH_TOKEN
+#
+# 2. Configura las siguientes variables de entorno:
+#  -DOCKER_IMAGE
+#  -RESOURCE_GROUP
+#  -CLUSTER_NAME
+#
+# 3. Habilita el inicio de sesión desde GitHub Actions (OIDC) en Azure:
+#  -Crea una App Registration en Azure.
+#  -Añade un Federated Credential con:
+#    * Issuer: https://token.actions.githubusercontent.com
+#    * Audience: api://AzureADTokenExchange
+#    * Subject (rama master): repo:<OWNER>/<REPO>:ref:refs/heads/master
+#      (si usas environments o otras ramas, ajusta el subject en consecuencia)
+#
+# 4. Concede permisos a la App sobre el AKS:
+#  -Rol: Azure Kubernetes Service Cluster User Role
+#  -Scope: el recurso del AKS (recomendado) o el Resource Group
+#  -Comandos de referencia:
+#    az account set -s "<SUBSCRIPTION_ID>"
+#    SP_OBJID=$(az ad sp show --id "<AZURE_CLIENT_ID>" --query id -o tsv)
+#    AKS_ID=$(az aks show -g "<RESOURCE_GROUP>" -n "<CLUSTER_NAME>" --query id -o tsv)
+#    az role assignment create --assignee-object-id $SP_OBJID --assignee-principal-type ServicePrincipal \
+#      --role "Azure Kubernetes Service Cluster User Role" --scope $AKS_ID
+
+name: Build and deploy an app to AKS (Docker Hub)
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+env:
+  DOCKER_IMAGE: "docker.io/copppolaa/spectaceweb"
+  RESOURCE_GROUP: "spectaceweb-rg"
+  CLUSTER_NAME: "spectaceweb-aks"
+
+jobs:
+  buildImage:
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Login a Docker Hub
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DH_USERNAME }}
+          password: ${{ secrets.DH_TOKEN }}
+
+      # Build & Push a Docker Hub
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          push: true
+          tags: |
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+            ${{ env.DOCKER_IMAGE }}:latest
+
+  deploy:
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    needs: [buildImage]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Login Azure
+      - name: Azure login
+        uses: azure/login@v1.4.6
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up kubelogin for non-interactive login
+        uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: 'v0.0.25'
+
+      - name: Get K8s context
+        uses: azure/aks-set-context@v4
+        with:
+          resource-group: ${{ env.RESOURCE_GROUP }}
+          cluster-name: ${{ env.CLUSTER_NAME }}
+          admin: 'false'
+          use-kubelogin: 'true'
+
+      # Despliegue apuntando a la imagen de Docker Hub
+      - name: Deploys application
+        uses: Azure/k8s-deploy@v4
+        with:
+          action: deploy
+          namespace: spectaceweb
+          manifests: |
+            k8s/namespace.yaml
+            k8s/service-lb.yaml
+            k8s/deployment.yaml
+          images: |
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}

@@ -13,6 +13,6 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: copppolaa/spectaceweb:1.0
+        image: copppolaa/spectaceweb:latest
         ports:
         - containerPort: 80
