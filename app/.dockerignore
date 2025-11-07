@@ -1,0 +1,6 @@
+# Ignora todo por defecto (contexto mínimo)
+**
+
+# Permite SOLO lo necesario para construir/servir la web
+!site/**
+!Dockerfile
